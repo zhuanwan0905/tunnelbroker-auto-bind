@@ -23,4 +23,4 @@
 
 ### 境外 VPS
 ```bash
-bash <(curl -fsSL [https://raw.githubusercontent.com/zhuanwan0905/tunnelbroker-auto-bind/main/tb_ipv6_autobind.sh](https://raw.githubusercontent.com/zhuanwan0905/tunnelbroker-auto-bind/main/tb_ipv6_autobind.sh))
+bash <(curl -fsSL https://raw.githubusercontent.com/zhuanwan0905/tunnelbroker-auto-bind/main/tb_ipv6_autobind.sh)
