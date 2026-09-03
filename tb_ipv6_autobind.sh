@@ -63,9 +63,10 @@ if echo "$LOGIN_RES" | grep -qi "Incorrect username or password"; then
     exit 1
 fi
 
+# 获取管理主页
 curl -s -b "$COOKIE_JAR" -L "https://tunnelbroker.net/index.php" > "$HTML_PAGE"
 
-# 解析隧道列表
+# 解析主页中的隧道列表（ID 数组）
 TUNNEL_IDS=($(grep -oP 'tunnel_detail\.php\?tid=\K[0-9]+' "$HTML_PAGE" | sort -u))
 
 if [ ${#TUNNEL_IDS[@]} -eq 0 ]; then
@@ -77,57 +78,31 @@ echo "------------------------------------------------------------"
 echo "[+] 成功获取到 ${#TUNNEL_IDS[@]} 条隧道："
 
 declare -A TUNNEL_NAME_MAP
-declare -A TUNNEL_SERVER_IP_MAP
-declare -A TUNNEL_CLIENT_IPV6_MAP
-declare -A TUNNEL_SERVER_IPV6_MAP
-declare -A TUNNEL_ROUTED_48_MAP
-declare -A TUNNEL_CLIENT_IPV4_MAP
+declare -A TUNNEL_R64_MAP
+declare -A TUNNEL_R48_MAP
 
 INDEX=1
 for TID in "${TUNNEL_IDS[@]}"; do
-    DETAIL_PAGE=$(curl -s -b "$COOKIE_JAR" "https://tunnelbroker.net/tunnel_detail.php?tid=${TID}")
+    # 从主页的表格行中提取该 tid 对应的隧道全称、/64段和/48段
+    ROW_INFO=$(grep -A 8 "tid=${TID}" "$HTML_PAGE" | tr '\n' ' ' | sed -e 's/<[^>]*>/ /g')
+    
+    # 提取隧道主机名 (如 tunnel1035689.tunnel.tserv15.lax1.ipv6.he.net)
+    TNAME=$(echo "$ROW_INFO" | grep -oP "tunnel${TID}[a-zA-Z0-9\.]+" | head -n 1 || echo "Tunnel-${TID}")
+    
+    # 提取 Routed /64
+    R64=$(echo "$ROW_INFO" | grep -oP '[0-9a-fA-F:]+::/64' | head -n 1 || echo "None")
+    
+    # 提取 Routed /48
+    R48=$(echo "$ROW_INFO" | grep -oP '[0-9a-fA-F:]+::/48' | head -n 1 || echo "None")
 
-    # 1. 提取当前绑定的 Client IPv4（通过 input value 或文本）
-    CLIENT_V4=$(echo "$DETAIL_PAGE" | grep -oP 'name="ipv4_client"\s+value="\K[0-9.]+' || true)
-    if [ -z "$CLIENT_V4" ]; then
-        CLIENT_V4=$(echo "$DETAIL_PAGE" | grep -Pzo '(?s)Client IPv4 Address:.*?((\d{1,3}\.){3}\d{1,3})' | grep -oP '(\d{1,3}\.){3}\d{1,3}' | head -n 1 || echo "Unknown")
-    fi
+    TUNNEL_NAME_MAP[$TID]="$TNAME"
+    TUNNEL_R64_MAP[$TID]="$R64"
+    TUNNEL_R48_MAP[$TID]="$R48"
 
-    # 2. 提取 Server IPv4
-    SERVER_V4=$(echo "$DETAIL_PAGE" | grep -Pzo '(?s)Server IPv4 Address:.*?((\d{1,3}\.){3}\d{1,3})' | grep -oP '(\d{1,3}\.){3}\d{1,3}' | head -n 1 || echo "Unknown")
-
-    # 3. 提取 Server IPv6 Address
-    SERVER_V6=$(echo "$DETAIL_PAGE" | grep -Pzo '(?s)Server IPv6 Address:.*?([0-9a-fA-F:]+)' | grep -oP '[0-9a-fA-F]{1,4}:[0-9a-fA-F:]+' | head -n 1 || echo "Unknown")
-
-    # 4. 提取 Client IPv6 Address (不带 /64 掩码)
-    CLIENT_V6=$(echo "$DETAIL_PAGE" | grep -Pzo '(?s)Client IPv6 Address:.*?([0-9a-fA-F:]+)(?=/64)' | grep -oP '[0-9a-fA-F]{1,4}:[0-9a-fA-F:]+' | head -n 1 || echo "Unknown")
-
-    # 5. 提取 Routed /48
-    ROUTED_48=$(echo "$DETAIL_PAGE" | grep -Pzo '(?s)Routed /48:.*?([0-9a-fA-F:]+::)(?=/48)' | grep -oP '[0-9a-fA-F]{1,4}:[0-9a-fA-F:]*::' | head -n 1 || true)
-
-    # 6. 提取 Description
-    DESCRIPTION=$(echo "$DETAIL_PAGE" | grep -Pzo '(?s)Description:.*?<input[^>]*value="\K[^"]*' | head -n 1 || true)
-    if [ -z "$DESCRIPTION" ]; then
-        DESCRIPTION="Tunnel-${TID}"
-    fi
-
-    TUNNEL_NAME_MAP[$TID]="$DESCRIPTION"
-    TUNNEL_SERVER_IP_MAP[$TID]="$SERVER_V4"
-    TUNNEL_CLIENT_IPV4_MAP[$TID]="$CLIENT_V4"
-    TUNNEL_CLIENT_IPV6_MAP[$TID]="$CLIENT_V6"
-    TUNNEL_SERVER_IPV6_MAP[$TID]="$SERVER_V6"
-    TUNNEL_ROUTED_48_MAP[$TID]="$ROUTED_48"
-
-    echo " [${INDEX}] 隧道ID: ${TID}"
-    echo "     描述: ${DESCRIPTION}"
-    echo "     对端 Server IPv4: ${SERVER_V4}"
-    echo "     当前 Client IPv4: ${CLIENT_V4}"
-    echo "     点对点 Client IPv6: ${CLIENT_V6}/64"
-    if [ -n "$ROUTED_48" ]; then
-        echo "     分配 Routed /48: ${ROUTED_48}/48"
-    else
-        echo "     分配 Routed /48: 未申请 (None)"
-    fi
+    echo " [${INDEX}] 隧道 ID: ${TID}"
+    echo "     域名: ${TNAME}"
+    echo "     分配 Routed /64: ${R64}"
+    echo "     分配 Routed /48: ${R48}"
     echo "------------------------------------------------------------"
     INDEX=$((INDEX + 1))
 done
@@ -163,48 +138,61 @@ else
     done
 fi
 
-TARGET_SERVER_V4="${TUNNEL_SERVER_IP_MAP[$SELECTED_TID]}"
-TARGET_CLIENT_V6="${TUNNEL_CLIENT_IPV6_MAP[$SELECTED_TID]}"
-TARGET_SERVER_V6="${TUNNEL_SERVER_IPV6_MAP[$SELECTED_TID]}"
-TARGET_ROUTED_48="${TUNNEL_ROUTED_48_MAP[$SELECTED_TID]}"
+echo "============================================================"
+echo "[*] 正在解析选定隧道 ${SELECTED_TID} 的详细互联参数..."
 
-# 校验解析是否完备
-if [ "$TARGET_SERVER_V4" = "Unknown" ] || [ "$TARGET_CLIENT_V6" = "Unknown" ]; then
-    echo "[!] 警告: 页面解析缺少关键参数，请检查对端 IP 是否获取正确。"
-    read -r -p "对端 Server IPv4: " TARGET_SERVER_V4
-    read -r -p "分配给你的 Client IPv6 (不带掩码): " TARGET_CLIENT_V6
-    read -r -p "对端 Server IPv6: " TARGET_SERVER_V6
+# 纯文本拉取详情页并过滤标签，彻底解决 grep 乱码与二进制判定
+DETAIL_RAW=$(curl -s -b "$COOKIE_JAR" "https://tunnelbroker.net/tunnel_detail.php?tid=${SELECTED_TID}")
+PLAIN_TEXT=$(echo "$DETAIL_RAW" | sed -e 's/<[^>]*>/ /g' -e 's/&nbsp;/ /g')
+
+# 提取核心参数
+TARGET_SERVER_V4=$(echo "$PLAIN_TEXT" | grep -oP 'Server IPv4 Address:\s*\K[0-9\.]+' | head -n 1 || true)
+TARGET_CLIENT_V6=$(echo "$PLAIN_TEXT" | grep -oP 'Client IPv6 Address:\s*\K[0-9a-fA-F:]+' | head -n 1 || true)
+TARGET_SERVER_V6=$(echo "$PLAIN_TEXT" | grep -oP 'Server IPv6 Address:\s*\K[0-9a-fA-F:]+' | head -n 1 || true)
+
+# 备用方案：如果正则漏网，从官方给出的 iproute2 脚本样例提取
+if [ -z "$TARGET_SERVER_V4" ] || [ -z "$TARGET_CLIENT_V6" ]; then
+    TARGET_SERVER_V4=$(echo "$DETAIL_RAW" | grep -oP 'mode sit remote \K[0-9\.]+' | head -n 1 || true)
+    TARGET_CLIENT_V6=$(echo "$DETAIL_RAW" | grep -oP 'add \K[0-9a-fA-F:]+(?=/64 dev)' | head -n 1 || true)
+    TARGET_SERVER_V6=$(echo "$DETAIL_RAW" | grep -oP 'add ::/0 gw \K[0-9a-fA-F:]+' | head -n 1 || true)
 fi
 
-echo "============================================================"
-echo "[*] 正在将隧道 ${SELECTED_TID} 的 Client IPv4 更新为: ${LOCAL_V4}..."
+echo "[+] 参数解析完毕："
+echo "    对端 Server IPv4: ${TARGET_SERVER_V4}"
+echo "    对端 Server IPv6: ${TARGET_SERVER_V6}"
+echo "    本机 Client IPv6: ${TARGET_CLIENT_V6}/64"
 
-# 调用 HE 官方更新接口 (直接更新隧道绑定的 IP)
+# 更新 Client IPv4
+echo "------------------------------------------------------------"
+echo "[*] 正在将对端绑定的 Client IPv4 更新为本机: ${LOCAL_V4}..."
+
 curl -s -b "$COOKIE_JAR" \
     "https://tunnelbroker.net/tunnel_detail.php?tid=${SELECTED_TID}" \
     -d "ipv4_client=${LOCAL_V4}" \
     -d "submit=Update" >/dev/null 2>&1 || true
 
-# 通过 HE 专用 API 同步端点
+# API 双重同步
 curl -s -k "https://${TB_USER}:${TB_PASS}@ipv4.tunnelbroker.net/nic/update?hostname=${SELECTED_TID}&myip=${LOCAL_V4}" >/dev/null 2>&1 || true
 
-echo "[+] Tunnelbroker 端 Client IPv4 更新完成！"
+echo "[+] HE 端 Client IPv4 更新成功！"
 
 # 处理 /48 选项
 BIND_48_IP=""
-if [ -n "$TARGET_ROUTED_48" ]; then
+TARGET_ROUTED_48="${TUNNEL_R48_MAP[$SELECTED_TID]}"
+if [ -n "$TARGET_ROUTED_48" ] && [ "$TARGET_ROUTED_48" != "None" ]; then
     echo "------------------------------------------------------------"
-    echo "[*] 检测到该隧道拥有 /48 地址块: ${TARGET_ROUTED_48}/48"
-    read -r -p "是否自动提取并绑定该网段的首个地址 (${TARGET_ROUTED_48}1/48) 到本机？(y/n, 默认 y): " USE_48
+    echo "[*] 检测到分配的 Routed /48 段: ${TARGET_ROUTED_48}"
+    read -r -p "是否附加绑定 ${TARGET_ROUTED_48%%::*}::1/48 到隧道接口？(y/n, 默认 y): " USE_48
     USE_48=${USE_48:-y}
     if [[ "$USE_48" =~ ^[Yy]$ ]]; then
-        BIND_48_IP="${TARGET_ROUTED_48}1"
-        echo "[+] 已选择绑定附加地址: ${BIND_48_IP}/48"
+        BIND_48_IP="${TARGET_ROUTED_48%%::*}::1"
+        echo "[+] 已选择绑定: ${BIND_48_IP}/48"
     fi
 fi
 
-# 本机隧道配置
+# 本机 SIT 隧道配置
 IFACE_NAME="he-ipv6"
+echo "------------------------------------------------------------"
 echo "[*] 正在配置本地网络接口: ${IFACE_NAME}..."
 
 if ip link show "$IFACE_NAME" >/dev/null 2>&1; then
@@ -212,12 +200,12 @@ if ip link show "$IFACE_NAME" >/dev/null 2>&1; then
     ip tunnel del "$IFACE_NAME" || true
 fi
 
-# 检查本地是否是 NAT 内网机（RackNerd 等通常有真实公网 IP 在 eth0 上）
+# 检查是否为 NAT 环境（RackNerd 偶尔会有内网私有 IP 映射公网）
 LOCAL_BIND_IP="$LOCAL_V4"
-if ! ip addr | grep -q "$LOCAL_V4"; then
+if ! ip -4 addr | grep -q "$LOCAL_V4"; then
     INTERNAL_IP=$(ip route get 1.1.1.1 2>/dev/null | grep -oP 'src \K[0-9.]+' || true)
     if [ -n "$INTERNAL_IP" ]; then
-        echo "[*] 检测到本机处于 NAT 网络环境，隧道 local 绑定内网 IP: ${INTERNAL_IP}"
+        echo "[*] 检测到本机网卡无直接绑定的公网 IP (NAT)，隧道 local 绑定私网 IP: ${INTERNAL_IP}"
         LOCAL_BIND_IP="$INTERNAL_IP"
     fi
 fi
@@ -234,7 +222,7 @@ ip route add ::/0 dev "$IFACE_NAME" metric 1
 
 echo "[+] 运行时网络接口已就绪。"
 
-# 持久化配置
+# 开机自启持久化
 read -r -p "是否将该隧道写入开机自启系统网络配置中？(y/n, 默认 y): " PERSIST
 PERSIST=${PERSIST:-y}
 
@@ -309,27 +297,16 @@ fi
 
 # 连通性测试
 echo "------------------------------------------------------------"
-echo "[*] 正在验证 IPv6 连通性..."
+echo "[*] 正在验证 IPv6 连通性 (ping6 2001:4860:4860::8888)..."
 if ping6 -c 3 -W 3 2001:4860:4860::8888 >/dev/null 2>&1; then
-    echo "[√] IPv6 隧道握手成功，网络连接正常！"
+    echo "[√] IPv6 隧道握手成功，公网连接通畅！"
     echo "    点对点互联 IPv6: ${TARGET_CLIENT_V6}"
     if [ -n "$BIND_48_IP" ]; then
-        echo "    已启用 Routed IPv6: ${BIND_48_IP}"
+        echo "    已挂载 Routed IPv6: ${BIND_48_IP}"
     fi
 else
-    echo "[!] 警告: ping6 测试未响应。请检查防火墙是否放行 Protocol 41 与 ICMP。"
-fi
-
-read -r -p "是否立即执行系统网络服务重启以完全生效？(y/n, 默认 n): " REBOOT_NET
-if [[ "$REBOOT_NET" =~ ^[Yy]$ ]]; then
-    echo "[*] 正在重启网络..."
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl restart networking 2>/dev/null || systemctl restart NetworkManager 2>/dev/null || true
-    else
-        /etc/init.d/networking restart 2>/dev/null || true
-    fi
-    echo "[+] 网络服务已重启。"
+    echo "[!] 警告: ping6 测试超时。请检查安全组是否允许 Protocol 41 (SIT) 以及 ICMP 协议。"
 fi
 
 echo "============================================================"
-echo "配置流程完成。"
+echo "执行完成。"
